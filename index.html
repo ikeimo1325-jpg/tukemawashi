@@ -1,0 +1,884 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>付け回し管理システム</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;-webkit-user-select:none;user-select:none;}
+body{font-family:'Helvetica Neue',Arial,sans-serif;background:#ffffff;color:#1a1a2e;height:100vh;overflow:hidden;display:flex;flex-direction:column;}
+
+/* Header */
+.header{background:#f5f7fa;padding:6px 14px;display:flex;align-items:center;justify-content:space-between;border-bottom:2px solid #e94560;height:44px;flex-shrink:0;}
+.header h1{font-size:16px;color:#e94560;font-weight:bold;letter-spacing:1px;}
+.header-right{display:flex;align-items:center;gap:16px;}
+.clock{font-size:20px;font-weight:bold;color:#1a1a2e;font-family:monospace;}
+.stats-bar{font-size:11px;color:#555;}
+.stats-bar span{color:#2e7d32;font-weight:bold;}
+
+/* Floor plan */
+.floor-area{flex:2;position:relative;background:#eef0f5;overflow:hidden;min-height:0;}
+.floor-plan{position:absolute;top:4px;left:4px;right:4px;bottom:4px;}
+
+/* Table */
+.table-item{position:absolute;background:#f5f5f5;border:2px solid #555;border-radius:4px;cursor:pointer;display:flex;flex-direction:column;align-items:center;padding:3px 2px;overflow:hidden;transition:border-color .2s,background-color .3s;}
+.table-item:hover{border-color:#e94560;z-index:5;}
+.table-item.active{background:#e8f5e9;border-color:#4caf50;}
+.table-item.vip{background:#ede7f6;}
+.table-item.vip.active{background:#d4edda;border-color:#4caf50;}
+.table-name{font-size:clamp(9px,1.3vw,13px);font-weight:bold;color:#1a237e;line-height:1.1;text-align:center;}
+.table-timer{font-size:clamp(8px,1.1vw,11px);font-family:monospace;color:#333;margin-top:1px;font-weight:bold;}
+.table-timer.warning{color:#f44336;}
+
+/* Customer circles */
+.customers-area{display:flex;flex-wrap:wrap;gap:2px;justify-content:center;align-items:center;flex:1;width:100%;padding:1px;}
+.cust-circle{width:clamp(14px,2.2vw,22px);height:clamp(14px,2.2vw,22px);border-radius:50%;border:2px solid #1a237e;background:rgba(26,35,126,0.08);display:flex;align-items:center;justify-content:center;transition:transform .15s,border-color .15s,background .15s;cursor:pointer;position:relative;overflow:hidden;}
+.cust-circle.has-cast{background:#c8e6c9;border-color:#388e3c;}
+.cust-circle.shimei{border-color:#e91e63;background:#fce4ec;}
+.cust-circle.drag-near{transform:scale(1.6);border-color:#e94560;border-width:2px;background:rgba(233,69,96,0.2);z-index:20;}
+.circle-name{font-size:clamp(5px,0.8vw,8px);color:#1b5e20;text-align:center;line-height:1;font-weight:bold;overflow:hidden;max-width:100%;padding:1px;}
+.circle-name.shimei-name{color:#880e4f;}
+
+/* Blink animation */
+@keyframes blink-table{0%,100%{background-color:inherit;}50%{background-color:#ff5252!important;border-color:#c62828!important;}}
+.table-item.blinking{animation:blink-table 0.9s infinite;}
+.table-item.blinking .table-name,.table-item.blinking .table-timer{color:#fff!important;}
+
+/* Cast area */
+.cast-area{flex:1;background:#f5f7fa;border-top:2px solid #e94560;display:flex;flex-direction:column;min-height:0;}
+.cast-area-header{padding:5px 12px;font-size:11px;color:#555;font-weight:bold;border-bottom:1px solid #d0d8e8;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;}
+.cast-list{display:flex;gap:8px;padding:6px 10px;overflow-x:auto;overflow-y:hidden;flex:1;align-items:center;}
+.cast-list::-webkit-scrollbar{height:3px;}
+.cast-list::-webkit-scrollbar-thumb{background:#b0bcd0;border-radius:2px;}
+
+/* Cast card */
+.cast-card{flex-shrink:0;width:68px;background:#d8e2f3;border-radius:8px;padding:7px 4px;text-align:center;cursor:grab;border:2px solid transparent;transition:all .2s;position:relative;touch-action:none;}
+.cast-card:active{cursor:grabbing;}
+.cast-card.dragging{opacity:0.4;border-color:#e94560;}
+.cast-card.busy{background:#c8e6c9;border-color:#4caf50;}
+.cast-card.onbreak{background:#ffe0b2;border-color:#ffa000;}
+.cast-card.shimei-at{border-color:#e91e63;}
+.cast-emoji{font-size:24px;line-height:1.1;}
+.cast-name{font-size:11px;color:#1a1a2e;font-weight:bold;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:3px;}
+.cast-sub{font-size:9px;margin-top:2px;height:11px;}
+.status-available{color:#2e7d32;}
+.status-busy{color:#e65100;}
+.status-break{color:#f57c00;}
+.cast-table-badge{position:absolute;top:2px;right:3px;background:#4caf50;color:#fff;border-radius:8px;padding:1px 4px;font-size:8px;font-weight:bold;}
+
+/* Drag ghost */
+.drag-ghost{position:fixed;pointer-events:none;z-index:9999;background:#e94560;border-radius:10px;padding:6px 12px;color:white;font-size:12px;font-weight:bold;transform:translate(-50%,-60%);box-shadow:0 4px 16px rgba(233,69,96,0.5);display:none;white-space:nowrap;}
+
+/* Modals */
+.modal-overlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center;}
+.modal-overlay.active{display:flex;}
+.modal{background:#ffffff;border-radius:14px;padding:18px;max-width:420px;width:92%;max-height:88vh;overflow-y:auto;border:1px solid #d0d8e8;box-shadow:0 8px 40px rgba(0,0,0,0.2);}
+.modal::-webkit-scrollbar{width:3px;}
+.modal::-webkit-scrollbar-thumb{background:#b0bcd0;}
+.modal h2{color:#e94560;margin-bottom:14px;font-size:17px;border-bottom:1px solid #d0d8e8;padding-bottom:8px;display:flex;align-items:center;gap:8px;}
+.modal-row{display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid #d0d8e8;}
+.modal-label{color:#666;font-size:12px;}
+.modal-value{color:#1a1a2e;font-size:14px;font-weight:bold;}
+
+/* Buttons */
+.btn{padding:8px 14px;border:none;border-radius:7px;cursor:pointer;font-size:13px;font-weight:bold;transition:all .15s;line-height:1;}
+.btn-primary{background:#e94560;color:#fff;}
+.btn-primary:hover{background:#c62a47;}
+.btn-success{background:#43a047;color:#fff;}
+.btn-success:hover{background:#2e7d32;}
+.btn-warning{background:#f57c00;color:#fff;}
+.btn-warning:hover{background:#e65100;}
+.btn-secondary{background:#dce5f5;color:#1a1a2e;}
+.btn-secondary:hover{background:#c5d5f0;}
+.btn-danger{background:#c62828;color:#fff;}
+.btn-danger:hover{background:#b71c1c;}
+.btn-info{background:#0277bd;color:#fff;}
+.btn-info:hover{background:#01579b;}
+.btn-group{display:flex;gap:7px;flex-wrap:wrap;margin-top:10px;}
+
+/* Timer display */
+.timer-big{font-size:38px;font-family:monospace;text-align:center;padding:12px;border-radius:10px;background:#eef0f5;margin:8px 0;letter-spacing:2px;}
+.timer-big.warning{color:#f44336;background:rgba(244,67,54,0.08);}
+.timer-big.ok{color:#2e7d32;}
+
+/* Form */
+.form-group{margin-bottom:13px;}
+.form-label{display:block;color:#666;font-size:11px;margin-bottom:5px;font-weight:bold;text-transform:uppercase;letter-spacing:0.5px;}
+.form-control{width:100%;background:#f0f3fa;border:1px solid #d0d8e8;border-radius:7px;color:#1a1a2e;padding:8px 12px;font-size:14px;}
+.form-control:focus{outline:none;border-color:#e94560;}
+.radio-group{display:flex;gap:10px;flex-wrap:wrap;}
+.radio-label{display:flex;align-items:center;gap:5px;color:#333;font-size:13px;cursor:pointer;padding:5px 10px;background:#f0f3fa;border-radius:6px;border:1px solid #d0d8e8;}
+.radio-label:has(input:checked){border-color:#e94560;background:rgba(233,69,96,0.08);}
+.radio-label input{accent-color:#e94560;}
+.num-input{display:flex;align-items:center;gap:8px;}
+.num-input input{width:58px;text-align:center;background:#f0f3fa;border:1px solid #d0d8e8;border-radius:7px;color:#1a1a2e;padding:7px;font-size:17px;font-weight:bold;}
+.num-btn{width:34px;height:34px;border:none;border-radius:50%;background:#dce5f5;color:#1a1a2e;font-size:20px;cursor:pointer;display:flex;align-items:center;justify-content:center;line-height:1;transition:background .15s;}
+.num-btn:hover{background:#c5d5f0;}
+
+/* Cast chips in table detail */
+.cast-chip{display:inline-flex;align-items:center;gap:5px;background:#d8e2f3;border-radius:12px;padding:4px 10px;font-size:12px;margin:3px;cursor:pointer;border:1px solid transparent;transition:all .15s;}
+.cast-chip:hover{background:#c5d5f0;}
+.cast-chip.shimei-chip{border-color:#e91e63;background:rgba(233,30,99,0.1);}
+.shimei-tag{background:#e91e63;color:#fff;border-radius:8px;padding:1px 5px;font-size:9px;font-weight:bold;}
+.remove-cast-btn{background:rgba(244,67,54,0.15);color:#f44336;border:none;border-radius:50%;width:16px;height:16px;font-size:12px;cursor:pointer;display:flex;align-items:center;justify-content:center;line-height:1;margin-left:2px;}
+.remove-cast-btn:hover{background:rgba(244,67,54,0.35);}
+
+/* History */
+.history-list{max-height:180px;overflow-y:auto;}
+.history-list::-webkit-scrollbar{width:3px;}
+.history-item{padding:7px 10px;border-radius:6px;margin-bottom:4px;font-size:12px;display:flex;justify-content:space-between;align-items:center;background:#f0f3fa;border-left:3px solid transparent;}
+.history-item.checked-out{border-left-color:#f44336;background:rgba(244,67,54,0.06);}
+.history-item.active-now{border-left-color:#4caf50;background:rgba(76,175,80,0.08);}
+.history-time{color:#888;font-size:10px;}
+
+/* Toast */
+#toast{position:fixed;bottom:35%;left:50%;transform:translateX(-50%);background:rgba(26,26,46,0.92);color:#fff;padding:10px 22px;border-radius:22px;font-size:13px;z-index:9999;pointer-events:none;border:1px solid #4caf50;white-space:nowrap;box-shadow:0 4px 20px rgba(0,0,0,0.3);}
+
+/* Section label (SV header - no session) */
+.table-item.section-header{background:#ddd;border-style:dashed;cursor:default;}
+.table-item.section-header:hover{border-color:#555;}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>🏮 付け回し管理</h1>
+  <div class="header-right">
+    <div class="stats-bar" id="headerStats"></div>
+    <div class="clock" id="clock">--:--:--</div>
+  </div>
+</div>
+
+<div class="floor-area">
+  <div class="floor-plan" id="floorPlan"></div>
+</div>
+
+<div class="cast-area">
+  <div class="cast-area-header">
+    <span>キャスト一覧 <span style="color:#666;font-weight:normal;"> ← ドラッグしてテーブルの○に配置</span></span>
+    <span id="castAreaStats" style="color:#4caf50;"></span>
+  </div>
+  <div class="cast-list" id="castList"></div>
+</div>
+
+<div class="drag-ghost" id="dragGhost"></div>
+
+<!-- Table Detail Modal -->
+<div class="modal-overlay" id="tableModal">
+  <div class="modal" id="tableModalContent"></div>
+</div>
+
+<!-- Check-in Modal -->
+<div class="modal-overlay" id="checkinModal">
+  <div class="modal">
+    <h2 id="checkinTitle">🚪 入店登録</h2>
+    <div class="form-group">
+      <label class="form-label">入店時間</label>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <input type="time" id="checkinTime" class="form-control" style="flex:1;">
+        <button class="btn btn-secondary" onclick="setNowTime()" style="white-space:nowrap;">現在時刻</button>
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">客数</label>
+      <div class="num-input">
+        <button class="num-btn" onclick="changeCount(-1)">−</button>
+        <input type="number" id="customerCount" value="2" min="1" max="12">
+        <button class="num-btn" onclick="changeCount(1)">＋</button>
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">タイマー設定</label>
+      <div class="radio-group">
+        <label class="radio-label"><input type="radio" name="timerMode" value="auto" checked> 自動延長</label>
+        <label class="radio-label"><input type="radio" name="timerMode" value="60"> 60分</label>
+        <label class="radio-label"><input type="radio" name="timerMode" value="90"> 90分</label>
+        <label class="radio-label"><input type="radio" name="timerMode" value="120"> 120分</label>
+      </div>
+    </div>
+    <div class="btn-group">
+      <button class="btn btn-primary" onclick="confirmCheckin()">入店登録</button>
+      <button class="btn btn-secondary" onclick="closeModal('checkinModal')">キャンセル</button>
+    </div>
+  </div>
+</div>
+
+<!-- Cast Detail Modal -->
+<div class="modal-overlay" id="castDetailModal">
+  <div class="modal" id="castDetailContent"></div>
+</div>
+
+<script>
+// ─── STATE ───────────────────────────────────────────────────────────
+const S = {
+  sessions: {},      // tableId -> session
+  casts: [],
+  castHistory: {},   // castId -> [{tableId,tableName,startTime,endTime,checkedOut,shimei}]
+  drag: { cast: null, active: false, startX: 0, startY: 0 },
+  checkinTableId: null,
+};
+
+// ─── TABLE DEFINITIONS ───────────────────────────────────────────────
+const TABLES = [
+  // RV group
+  {id:'RV4', name:'RV4', x:2.5,  y:2,    w:5.9,  h:11,  type:'rv'},
+  {id:'RV3', name:'RV3', x:8.6,  y:2,    w:5.9,  h:11,  type:'rv'},
+  {id:'RV2', name:'RV2', x:14.7, y:2,    w:5.9,  h:11,  type:'rv'},
+  {id:'RV1', name:'RV1', x:20.8, y:2,    w:5.5,  h:11,  type:'rv'},
+  {id:'RV6', name:'RV6', x:2.5,  y:13.5, w:7.3,  h:10,  type:'rv'},
+  {id:'RV5', name:'RV5', x:10.0, y:13.5, w:8.2,  h:10,  type:'rv'},
+  {id:'RV',  name:'RV',  x:18.4, y:13.5, w:7.9,  h:10,  type:'rv'},
+  // VIP
+  {id:'V1',  name:'V1',  x:37.5, y:2,    w:17,   h:21,  type:'vip'},
+  {id:'V2',  name:'V2',  x:58.5, y:2,    w:33,   h:21,  type:'vip'},
+  // Left mid
+  {id:'13',  name:'13',  x:2.5,  y:26,   w:6.5,  h:26,  type:'normal'},
+  {id:'15',  name:'15',  x:15.5, y:26,   w:7.5,  h:13,  type:'normal'},
+  {id:'14',  name:'14',  x:15.5, y:40,   w:7.5,  h:13,  type:'normal'},
+  {id:'12',  name:'12',  x:2.5,  y:54,   w:9,    h:26,  type:'normal'},
+  {id:'11',  name:'11',  x:15.5, y:54,   w:10,   h:26,  type:'normal'},
+  // Center
+  {id:'PV',  name:'PV',  x:44,   y:26,   w:11.5, h:27,  type:'vip'},
+  {id:'AS',  name:'AS',  x:56.5, y:26,   w:7.5,  h:27,  type:'normal'},
+  // SV section
+  {id:'SV',  name:'SV',  x:65.5, y:26,   w:26,   h:9,   type:'section'},
+  {id:'SV1', name:'SV1', x:65.5, y:36,   w:8,    h:13,  type:'sv'},
+  {id:'SV2', name:'SV2', x:73.7, y:36,   w:8,    h:13,  type:'sv'},
+  {id:'SV3', name:'SV3', x:82.0, y:36,   w:9.5,  h:13,  type:'sv'},
+  // Right mid numbered
+  {id:'10',  name:'10',  x:65.5, y:50,   w:8,    h:17,  type:'normal'},
+  {id:'9',   name:'9',   x:73.7, y:50,   w:8,    h:17,  type:'normal'},
+  {id:'8',   name:'8',   x:82.0, y:50,   w:7.5,  h:17,  type:'normal'},
+  {id:'7',   name:'7',   x:89.7, y:50,   w:7.8,  h:17,  type:'normal'},
+  // Bottom center
+  {id:'6',   name:'6',   x:44,   y:55,   w:9.5,  h:14,  type:'normal'},
+  {id:'5',   name:'5',   x:44,   y:71,   w:9.5,  h:14,  type:'normal'},
+  {id:'4',   name:'4',   x:54,   y:71,   w:10.5, h:14,  type:'normal'},
+  // Bottom right
+  {id:'3',   name:'3',   x:65.5, y:68,   w:8,    h:18,  type:'normal'},
+  {id:'2',   name:'2',   x:73.7, y:68,   w:8,    h:18,  type:'normal'},
+  {id:'1',   name:'1',   x:82.0, y:68,   w:9.5,  h:18,  type:'normal'},
+];
+
+const TABLE_MAP = Object.fromEntries(TABLES.map(t => [t.id, t]));
+
+// ─── INITIAL CASTS ───────────────────────────────────────────────────
+const INIT_CASTS = [
+  {id:'c01',name:'さくら',  emoji:'🌸',status:'available'},
+  {id:'c02',name:'れな',    emoji:'🌺',status:'available'},
+  {id:'c03',name:'みく',    emoji:'💎',status:'available'},
+  {id:'c04',name:'あいり',  emoji:'🌙',status:'available'},
+  {id:'c05',name:'ゆい',    emoji:'⭐',status:'available'},
+  {id:'c06',name:'なな',    emoji:'🌷',status:'available'},
+  {id:'c07',name:'りか',    emoji:'🦋',status:'available'},
+  {id:'c08',name:'まお',    emoji:'🌻',status:'available'},
+  {id:'c09',name:'あやか',  emoji:'🌹',status:'available'},
+  {id:'c10',name:'ひなた',  emoji:'☀️',status:'available'},
+  {id:'c11',name:'しおり',  emoji:'🎀',status:'available'},
+  {id:'c12',name:'えり',    emoji:'💫',status:'available'},
+];
+
+// ─── INIT ─────────────────────────────────────────────────────────────
+function init() {
+  S.casts = INIT_CASTS.map(c => ({...c}));
+  S.casts.forEach(c => { S.castHistory[c.id] = []; });
+  renderFloor();
+  renderCasts();
+  startClock();
+  setInterval(tickTimers, 1000);
+  // Close modals on overlay click
+  document.querySelectorAll('.modal-overlay').forEach(o => {
+    o.addEventListener('click', e => { if(e.target===o) o.classList.remove('active'); });
+  });
+}
+
+// ─── CLOCK ────────────────────────────────────────────────────────────
+function startClock() {
+  const tick = () => {
+    const n = new Date();
+    document.getElementById('clock').textContent =
+      pad(n.getHours())+':'+pad(n.getMinutes())+':'+pad(n.getSeconds());
+  };
+  tick(); setInterval(tick, 1000);
+}
+function pad(n){return String(n).padStart(2,'0');}
+
+// ─── TIMER TICK ───────────────────────────────────────────────────────
+function tickTimers() {
+  const now = Date.now();
+  Object.keys(S.sessions).forEach(tid => {
+    const sess = S.sessions[tid];
+    const elapsed = Math.floor((now - sess.startTime) / 1000);
+    const total = sess.totalMinutes * 60;
+    let rem = total - (elapsed % total);
+    if (sess.autoExtend && elapsed > 0 && elapsed % total === 0) rem = total;
+    sess.remainingSeconds = rem;
+    sess.currentCycle = Math.floor(elapsed / total);
+
+    const el = document.querySelector(`[data-tid="${tid}"]`);
+    if (!el) return;
+    const timerEl = el.querySelector('.table-timer');
+    if (timerEl) {
+      timerEl.textContent = pad(Math.floor(rem/60))+':'+pad(rem%60);
+      timerEl.className = 'table-timer' + (rem <= 600 ? ' warning' : '');
+    }
+    if (rem <= 600) { el.classList.add('blinking'); }
+    else            { el.classList.remove('blinking'); }
+  });
+  updateStats();
+}
+
+// ─── RENDER FLOOR ─────────────────────────────────────────────────────
+function renderFloor() {
+  const fp = document.getElementById('floorPlan');
+  fp.innerHTML = '';
+  TABLES.forEach(def => fp.appendChild(makeTableEl(def)));
+}
+
+function makeTableEl(def) {
+  const el = document.createElement('div');
+  el.className = 'table-item' + (def.type === 'section' ? ' section-header' :
+    def.type === 'vip' || def.type === 'sv' ? ' vip' : '');
+  el.dataset.tid = def.id;
+  el.style.cssText = `left:${def.x}%;top:${def.y}%;width:${def.w}%;height:${def.h}%;`;
+
+  const nameEl = document.createElement('div');
+  nameEl.className = 'table-name';
+  nameEl.textContent = def.name;
+  el.appendChild(nameEl);
+
+  if (def.type === 'section') { el.style.cursor = 'default'; return el; }
+
+  const sess = S.sessions[def.id];
+  if (sess) {
+    el.classList.add('active');
+    const rem = sess.remainingSeconds ?? sess.totalMinutes * 60;
+    if (rem <= 600) el.classList.add('blinking');
+
+    const timerEl = document.createElement('div');
+    timerEl.className = 'table-timer' + (rem <= 600 ? ' warning' : '');
+    timerEl.textContent = pad(Math.floor(rem/60))+':'+pad(rem%60);
+    el.appendChild(timerEl);
+
+    const ca = document.createElement('div');
+    ca.className = 'customers-area';
+    const maxCircles = Math.min(sess.customerCount, 6);
+    for (let i = 0; i < maxCircles; i++) {
+      const circle = document.createElement('div');
+      circle.className = 'cust-circle';
+      circle.dataset.tid = def.id;
+      circle.dataset.idx = i;
+      const castId = sess.casts[i];
+      if (castId) {
+        circle.classList.add('has-cast');
+        if (sess.shimei && sess.shimei[i]) circle.classList.add('shimei');
+        const cast = getCast(castId);
+        const cn = document.createElement('div');
+        cn.className = 'circle-name' + (sess.shimei?.[i] ? ' shimei-name' : '');
+        cn.textContent = cast ? cast.name.slice(0,3) : '?';
+        circle.appendChild(cn);
+        circle.addEventListener('click', ev => { ev.stopPropagation(); showCastDetail(castId, def.id); });
+      } else {
+        circle.addEventListener('click', ev => ev.stopPropagation());
+      }
+      ca.appendChild(circle);
+    }
+    if (sess.customerCount > 6) {
+      const more = document.createElement('div');
+      more.style.cssText = 'font-size:8px;color:#666;';
+      more.textContent = `+${sess.customerCount-6}`;
+      ca.appendChild(more);
+    }
+    el.appendChild(ca);
+    el.addEventListener('click', () => showTableDetail(def.id));
+  } else {
+    el.addEventListener('click', () => openCheckin(def.id));
+  }
+  return el;
+}
+
+function refreshTable(tid) {
+  const fp = document.getElementById('floorPlan');
+  const old = fp.querySelector(`[data-tid="${tid}"]`);
+  const def = TABLE_MAP[tid];
+  if (!old || !def) return;
+  fp.replaceChild(makeTableEl(def), old);
+}
+
+// ─── RENDER CASTS ─────────────────────────────────────────────────────
+function renderCasts() {
+  const list = document.getElementById('castList');
+  list.innerHTML = '';
+  S.casts.forEach(cast => list.appendChild(makeCastCard(cast)));
+  updateStats();
+}
+
+function makeCastCard(cast) {
+  const card = document.createElement('div');
+  const cls = cast.status === 'break' ? 'onbreak' :
+               cast.status === 'busy'  ? 'busy' : '';
+  card.className = 'cast-card' + (cls ? ' '+cls : '');
+  card.dataset.castId = cast.id;
+  card.setAttribute('draggable', false);
+
+  // Find where this cast is assigned
+  let atTable = null;
+  Object.keys(S.sessions).forEach(tid => {
+    if (S.sessions[tid].casts.includes(cast.id)) atTable = TABLE_MAP[tid];
+  });
+  if (atTable) {
+    const badge = document.createElement('div');
+    badge.className = 'cast-table-badge';
+    badge.textContent = atTable.name;
+    card.appendChild(badge);
+  }
+
+  card.innerHTML += `
+    <div class="cast-emoji">${cast.emoji}</div>
+    <div class="cast-name">${cast.name}</div>
+    <div class="cast-sub status-${cast.status}">${statusLabel(cast.status)}</div>
+  `;
+
+  card.addEventListener('mousedown', e => startDrag(e, cast));
+  card.addEventListener('touchstart', e => startTouchDrag(e, cast), {passive:false});
+  card.addEventListener('click', () => showCastDetail(cast.id, null));
+  return card;
+}
+
+function statusLabel(s) {
+  return s === 'available' ? '待機中' : s === 'busy' ? '接客中' : '休憩中';
+}
+
+function updateStats() {
+  const avail = S.casts.filter(c=>c.status==='available').length;
+  const busy  = S.casts.filter(c=>c.status==='busy').length;
+  const tables = Object.keys(S.sessions).length;
+  document.getElementById('castAreaStats').textContent =
+    `待機 ${avail}名 / 接客中 ${busy}名`;
+  document.getElementById('headerStats').innerHTML =
+    `テーブル使用中 <span>${tables}</span>卓`;
+}
+
+// ─── DRAG & DROP ──────────────────────────────────────────────────────
+const ghost = document.getElementById('dragGhost');
+
+function startDrag(e, cast) {
+  if (e.button !== 0) return;
+  e.preventDefault();
+  S.drag = {cast, active:false, startX:e.clientX, startY:e.clientY};
+  ghost.textContent = cast.emoji + ' ' + cast.name;
+  ghost.style.left = e.clientX+'px';
+  ghost.style.top  = e.clientY+'px';
+  ghost.style.display = 'block';
+  document.addEventListener('mousemove', onMouseMove);
+  document.addEventListener('mouseup', onMouseUp);
+  markCardDragging(cast.id, true);
+}
+
+function onMouseMove(e) {
+  if (!S.drag.cast) return;
+  ghost.style.left = e.clientX+'px';
+  ghost.style.top  = e.clientY+'px';
+  S.drag.active = true;
+  updateCircleProximity(e.clientX, e.clientY);
+}
+
+function onMouseUp(e) {
+  document.removeEventListener('mousemove', onMouseMove);
+  document.removeEventListener('mouseup', onMouseUp);
+  ghost.style.display = 'none';
+  clearCircleProximity();
+  if (S.drag.cast && S.drag.active) dropOnCircle(e.clientX, e.clientY, S.drag.cast);
+  markCardDragging(S.drag.cast?.id, false);
+  S.drag = {cast:null, active:false};
+}
+
+function startTouchDrag(e, cast) {
+  e.preventDefault();
+  const t = e.touches[0];
+  S.drag = {cast, active:false, startX:t.clientX, startY:t.clientY};
+  ghost.textContent = cast.emoji + ' ' + cast.name;
+  ghost.style.left = t.clientX+'px';
+  ghost.style.top  = t.clientY+'px';
+  ghost.style.display = 'block';
+  document.addEventListener('touchmove', onTouchMove, {passive:false});
+  document.addEventListener('touchend', onTouchEnd);
+  markCardDragging(cast.id, true);
+}
+
+function onTouchMove(e) {
+  e.preventDefault();
+  if (!S.drag.cast) return;
+  const t = e.touches[0];
+  ghost.style.left = t.clientX+'px';
+  ghost.style.top  = t.clientY+'px';
+  S.drag.active = true;
+  updateCircleProximity(t.clientX, t.clientY);
+}
+
+function onTouchEnd(e) {
+  document.removeEventListener('touchmove', onTouchMove);
+  document.removeEventListener('touchend', onTouchEnd);
+  ghost.style.display = 'none';
+  clearCircleProximity();
+  if (S.drag.cast && S.drag.active) {
+    const t = e.changedTouches[0];
+    dropOnCircle(t.clientX, t.clientY, S.drag.cast);
+  }
+  markCardDragging(S.drag.cast?.id, false);
+  S.drag = {cast:null, active:false};
+}
+
+function updateCircleProximity(cx, cy) {
+  document.querySelectorAll('.cust-circle').forEach(circle => {
+    const r = circle.getBoundingClientRect();
+    const dx = cx - (r.left + r.width/2);
+    const dy = cy - (r.top  + r.height/2);
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    if (dist < 70 && !circle.classList.contains('has-cast'))
+      circle.classList.add('drag-near');
+    else
+      circle.classList.remove('drag-near');
+  });
+}
+
+function clearCircleProximity() {
+  document.querySelectorAll('.cust-circle.drag-near').forEach(c => c.classList.remove('drag-near'));
+}
+
+function dropOnCircle(cx, cy, cast) {
+  // Find nearest empty circle within 80px
+  let best = null, bestDist = 80;
+  document.querySelectorAll('.cust-circle').forEach(circle => {
+    if (circle.classList.contains('has-cast')) return;
+    const r = circle.getBoundingClientRect();
+    const dx = cx - (r.left + r.width/2);
+    const dy = cy - (r.top  + r.height/2);
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    if (dist < bestDist) { bestDist = dist; best = circle; }
+  });
+  if (!best) return;
+  const tid = best.dataset.tid;
+  const idx = parseInt(best.dataset.idx);
+  assignCast(cast.id, tid, idx);
+}
+
+function markCardDragging(castId, on) {
+  const card = document.querySelector(`[data-cast-id="${castId}"]`);
+  if (card) card.classList.toggle('dragging', on);
+}
+
+// ─── ASSIGN CAST ──────────────────────────────────────────────────────
+function assignCast(castId, tableId, idx) {
+  const sess = S.sessions[tableId];
+  if (!sess) return;
+  const cast = getCast(castId);
+  if (!cast) return;
+
+  // Remove from any previous table
+  Object.keys(S.sessions).forEach(tid => {
+    const s = S.sessions[tid];
+    const i = s.casts.indexOf(castId);
+    if (i !== -1) {
+      // Add partial history entry
+      pushHistory(castId, tid, false);
+      s.casts[i] = null;
+      refreshTable(tid);
+    }
+  });
+
+  sess.casts[idx] = castId;
+  if (!sess.castStartTimes) sess.castStartTimes = {};
+  sess.castStartTimes[castId] = Date.now();
+  cast.status = 'busy';
+
+  refreshTable(tableId);
+  renderCasts();
+  toast(`${cast.name} を ${TABLE_MAP[tableId].name} に配置しました`);
+}
+
+function removeCastFromTable(castId, tableId) {
+  const sess = S.sessions[tableId];
+  if (!sess) return;
+  const i = sess.casts.indexOf(castId);
+  if (i === -1) return;
+  pushHistory(castId, tableId, false);
+  sess.casts[i] = null;
+  const cast = getCast(castId);
+  if (cast && !isAssigned(castId)) cast.status = 'available';
+  refreshTable(tableId);
+  renderCasts();
+  closeModal('tableModal');
+}
+
+function isAssigned(castId) {
+  return Object.values(S.sessions).some(s => s.casts.includes(castId));
+}
+
+// ─── CHECK-IN ─────────────────────────────────────────────────────────
+function openCheckin(tableId) {
+  S.checkinTableId = tableId;
+  document.getElementById('checkinTitle').textContent = `🚪 ${TABLE_MAP[tableId].name} 入店登録`;
+  setNowTime();
+  document.getElementById('customerCount').value = 2;
+  document.querySelector('input[name="timerMode"][value="auto"]').checked = true;
+  document.getElementById('checkinModal').classList.add('active');
+}
+
+function setNowTime() {
+  const n = new Date();
+  document.getElementById('checkinTime').value = pad(n.getHours())+':'+pad(n.getMinutes());
+}
+
+function changeCount(d) {
+  const inp = document.getElementById('customerCount');
+  inp.value = Math.max(1, Math.min(12, parseInt(inp.value||2) + d));
+}
+
+function confirmCheckin() {
+  const tid  = S.checkinTableId;
+  const tval = document.getElementById('checkinTime').value;
+  const cnt  = parseInt(document.getElementById('customerCount').value);
+  const mode = document.querySelector('input[name="timerMode"]:checked').value;
+  const [h,m] = tval.split(':').map(Number);
+  const st = new Date(); st.setHours(h,m,0,0);
+  const mins = mode === 'auto' ? 60 : parseInt(mode);
+
+  S.sessions[tid] = {
+    tableId: tid,
+    startTime: st.getTime(),
+    customerCount: cnt,
+    totalMinutes: mins,
+    autoExtend: mode === 'auto',
+    casts: new Array(cnt).fill(null),
+    shimei: new Array(cnt).fill(false),
+    castStartTimes: {},
+    remainingSeconds: mins * 60,
+    currentCycle: 0,
+  };
+
+  closeModal('checkinModal');
+  refreshTable(tid);
+  renderCasts();
+  toast(`${TABLE_MAP[tid].name} に ${cnt}名様が入店しました`);
+}
+
+// ─── TABLE DETAIL ─────────────────────────────────────────────────────
+function showTableDetail(tid) {
+  const sess = S.sessions[tid];
+  const tbl  = TABLE_MAP[tid];
+  if (!sess) return;
+
+  const rem = sess.remainingSeconds ?? sess.totalMinutes * 60;
+  const isWarn = rem <= 600;
+  const entry = new Date(sess.startTime);
+  const entryStr = pad(entry.getHours())+':'+pad(entry.getMinutes());
+  const assigned = sess.casts.filter(Boolean);
+  const shimeiCount = (sess.shimei||[]).filter((s,i) => s && sess.casts[i]).length;
+
+  let castsHTML = '';
+  sess.casts.forEach((castId, i) => {
+    if (!castId) return;
+    const cast = getCast(castId);
+    if (!cast) return;
+    const isShimei = sess.shimei?.[i];
+    castsHTML += `
+      <span class="cast-chip ${isShimei?'shimei-chip':''}" onclick="showCastDetail('${castId}','${tid}')">
+        ${cast.emoji} ${cast.name}
+        ${isShimei ? '<span class="shimei-tag">指名</span>' : ''}
+        <button class="remove-cast-btn" onclick="event.stopPropagation();removeCastFromTable('${castId}','${tid}')" title="外す">×</button>
+      </span>
+    `;
+  });
+
+  // shimei toggle buttons for each circle
+  let shimeiToggleHTML = '';
+  if (assigned.length > 0) {
+    shimeiToggleHTML = '<div style="margin-top:8px;"><div class="modal-label" style="margin-bottom:5px;">指名設定</div><div style="display:flex;flex-wrap:wrap;gap:6px;">';
+    sess.casts.forEach((castId, i) => {
+      if (!castId) return;
+      const cast = getCast(castId);
+      const isS = sess.shimei?.[i];
+      shimeiToggleHTML += `<button class="btn ${isS?'btn-danger':'btn-secondary'}" style="font-size:11px;padding:5px 10px;" onclick="toggleShimei('${tid}',${i})">
+        ${cast.name} ${isS?'▶ 指名':'指名にする'}
+      </button>`;
+    });
+    shimeiToggleHTML += '</div></div>';
+  }
+
+  document.getElementById('tableModalContent').innerHTML = `
+    <h2>🪑 テーブル ${tbl.name}</h2>
+    <div class="timer-big ${isWarn?'warning':'ok'}">${pad(Math.floor(rem/60))}:${pad(rem%60)}</div>
+    <div style="text-align:center;font-size:11px;color:#888;margin-bottom:8px;">${sess.totalMinutes}分 / ${sess.autoExtend?'自動延長':'タイム'}</div>
+    <div class="modal-row">
+      <span class="modal-label">入店時間</span>
+      <span class="modal-value">${entryStr}</span>
+    </div>
+    <div class="modal-row">
+      <span class="modal-label">客数</span>
+      <span class="modal-value">${sess.customerCount}名</span>
+    </div>
+    <div class="modal-row">
+      <span class="modal-label">指名数</span>
+      <span class="modal-value" style="color:#e91e63;">${shimeiCount}名</span>
+    </div>
+    ${castsHTML ? `<div class="modal-row" style="flex-direction:column;align-items:flex-start;gap:6px;">
+      <span class="modal-label">担当キャスト</span>
+      <div>${castsHTML}</div>
+    </div>` : '<div class="modal-row"><span class="modal-label">担当キャスト</span><span style="color:#666;font-size:12px;">未配置</span></div>'}
+    ${shimeiToggleHTML}
+    <div style="margin-top:14px;">
+      <div class="modal-label" style="margin-bottom:5px;">延長</div>
+      <div class="btn-group">
+        <button class="btn btn-warning" onclick="extendTimer('${tid}',30)">＋30分</button>
+        <button class="btn btn-warning" onclick="extendTimer('${tid}',60)">＋60分</button>
+      </div>
+    </div>
+    <div class="btn-group" style="margin-top:16px;padding-top:12px;border-top:1px solid #2a3a5c;">
+      <button class="btn btn-danger" onclick="checkout('${tid}')">💳 会計</button>
+      <button class="btn btn-secondary" onclick="closeModal('tableModal')">閉じる</button>
+    </div>
+  `;
+  document.getElementById('tableModal').classList.add('active');
+}
+
+function toggleShimei(tid, idx) {
+  const sess = S.sessions[tid];
+  if (!sess) return;
+  if (!sess.shimei) sess.shimei = new Array(sess.customerCount).fill(false);
+  sess.shimei[idx] = !sess.shimei[idx];
+  refreshTable(tid);
+  showTableDetail(tid);
+}
+
+function extendTimer(tid, mins) {
+  const sess = S.sessions[tid];
+  if (!sess) return;
+  sess.totalMinutes += mins;
+  sess.remainingSeconds = (sess.remainingSeconds ?? 0) + mins * 60;
+  refreshTable(tid);
+  closeModal('tableModal');
+  toast(`${TABLE_MAP[tid].name} を ${mins}分延長しました`);
+}
+
+function checkout(tid) {
+  const sess = S.sessions[tid];
+  if (!sess) return;
+  sess.casts.forEach(castId => {
+    if (!castId) return;
+    pushHistory(castId, tid, true);
+    const cast = getCast(castId);
+    if (cast && !isAssignedElsewhere(castId, tid)) cast.status = 'available';
+  });
+  delete S.sessions[tid];
+  closeModal('tableModal');
+  refreshTable(tid);
+  renderCasts();
+  toast(`${TABLE_MAP[tid].name} の会計が完了しました`);
+}
+
+function isAssignedElsewhere(castId, exceptTid) {
+  return Object.keys(S.sessions).some(tid => tid !== exceptTid && S.sessions[tid].casts.includes(castId));
+}
+
+// ─── CAST DETAIL ──────────────────────────────────────────────────────
+function showCastDetail(castId, fromTable) {
+  const cast = getCast(castId);
+  if (!cast) return;
+  const history = [...(S.castHistory[castId] || [])].reverse();
+
+  let currentTid = null;
+  let currentServiceMins = 0;
+  Object.keys(S.sessions).forEach(tid => {
+    const s = S.sessions[tid];
+    if (s.casts.includes(castId)) {
+      currentTid = tid;
+      const st = s.castStartTimes?.[castId] || s.startTime;
+      currentServiceMins = Math.floor((Date.now() - st) / 60000);
+    }
+  });
+
+  let histHTML = history.length === 0
+    ? '<div style="color:#555;font-size:12px;padding:8px;">履歴なし</div>'
+    : history.map(h => {
+        const st = new Date(h.startTime);
+        const et = new Date(h.endTime||Date.now());
+        const dur = Math.floor((et-st)/60000);
+        return `
+          <div class="history-item ${h.checkedOut?'checked-out':''}">
+            <div>
+              <strong>${h.tableName}</strong>テーブル
+              ${h.checkedOut?'<span style="color:#f44336;font-size:9px;margin-left:4px;">会計済</span>':''}
+            </div>
+            <div class="history-time">${pad(st.getHours())}:${pad(st.getMinutes())}〜${pad(et.getHours())}:${pad(et.getMinutes())} (${dur}分)</div>
+          </div>`;
+      }).join('');
+
+  document.getElementById('castDetailContent').innerHTML = `
+    <h2>${cast.emoji} ${cast.name}</h2>
+    ${currentTid ? `
+    <div class="modal-row" style="background:rgba(76,175,80,0.08);border-radius:8px;padding:8px 12px;">
+      <span class="modal-label">現在のテーブル</span>
+      <span class="modal-value" style="color:#4caf50;">${TABLE_MAP[currentTid].name}（${currentServiceMins}分接客中）</span>
+    </div>` : `
+    <div class="modal-row">
+      <span class="modal-label">ステータス</span>
+      <span class="modal-value status-${cast.status}">${statusLabel(cast.status)}</span>
+    </div>`}
+    <div style="margin-top:10px;">
+      <div class="modal-label" style="margin-bottom:6px;">ステータス変更</div>
+      <div class="btn-group">
+        <button class="btn btn-success" onclick="setCastStatus('${castId}','available')">待機中</button>
+        <button class="btn btn-info" onclick="setCastStatus('${castId}','break')">休憩</button>
+      </div>
+    </div>
+    <div style="margin-top:14px;padding-top:12px;border-top:1px solid #2a3a5c;">
+      <div class="modal-label" style="margin-bottom:6px;">接客履歴 (${S.castHistory[castId]?.length||0}件)</div>
+      <div class="history-list">${histHTML}</div>
+    </div>
+    <div class="btn-group" style="margin-top:12px;">
+      <button class="btn btn-secondary" onclick="closeModal('castDetailModal')">閉じる</button>
+    </div>
+  `;
+  document.getElementById('castDetailModal').classList.add('active');
+}
+
+function setCastStatus(castId, status) {
+  const cast = getCast(castId);
+  if (cast) {
+    cast.status = status;
+    renderCasts();
+    closeModal('castDetailModal');
+  }
+}
+
+// ─── HELPERS ──────────────────────────────────────────────────────────
+function getCast(id) { return S.casts.find(c => c.id === id); }
+
+function pushHistory(castId, tableId, checkedOut) {
+  if (!S.castHistory[castId]) S.castHistory[castId] = [];
+  const sess = S.sessions[tableId];
+  const st = sess?.castStartTimes?.[castId] || sess?.startTime || Date.now();
+  S.castHistory[castId].push({
+    tableId, tableName: TABLE_MAP[tableId]?.name || tableId,
+    startTime: st, endTime: Date.now(), checkedOut,
+  });
+}
+
+function closeModal(id) { document.getElementById(id).classList.remove('active'); }
+
+function toast(msg) {
+  const old = document.getElementById('toast');
+  if (old) old.remove();
+  const el = document.createElement('div');
+  el.id = 'toast';
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 2500);
+}
+
+// ─── START ────────────────────────────────────────────────────────────
+init();
+</script>
+</body>
+</html>
