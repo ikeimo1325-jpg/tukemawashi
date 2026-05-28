@@ -137,6 +137,14 @@ body{font-family:'Helvetica Neue',Arial,sans-serif;background:#1a1a2e;color:#eee
 /* Section label (SV header - no session) */
 .table-item.section-header{background:#ddd;border-style:dashed;cursor:default;}
 .table-item.section-header:hover{border-color:#555;}
+
+/* Join mode */
+.join-mode-bar{position:absolute;top:6px;left:50%;transform:translateX(-50%);z-index:50;background:rgba(233,69,96,0.95);border-radius:10px;padding:6px 14px;display:none;align-items:center;gap:10px;color:#fff;font-size:13px;white-space:nowrap;box-shadow:0 2px 12px rgba(233,69,96,0.4);}
+.join-mode-bar.active{display:flex;}
+.table-item.join-selected{border-color:#e94560!important;box-shadow:0 0 0 3px rgba(233,69,96,0.5);z-index:10;}
+.table-item.join-grouped{border-color:#9c27b0!important;border-style:dashed!important;}
+.table-item.join-inactive{opacity:0.5;}
+.join-badge{position:absolute;top:1px;left:2px;background:#9c27b0;color:#fff;border-radius:3px;padding:0 3px;font-size:7px;font-weight:bold;line-height:14px;pointer-events:none;}
 </style>
 </head>
 <body>
@@ -145,11 +153,17 @@ body{font-family:'Helvetica Neue',Arial,sans-serif;background:#1a1a2e;color:#eee
   <h1>🏮 付け回し管理</h1>
   <div class="header-right">
     <div class="stats-bar" id="headerStats"></div>
+    <button class="btn btn-secondary" id="joinModeBtn" onclick="toggleJoinMode()" style="font-size:11px;padding:5px 8px;">🔗 連結</button>
     <div class="clock" id="clock">--:--:--</div>
   </div>
 </div>
 
 <div class="floor-area">
+  <div class="join-mode-bar" id="joinModeBar">
+    <span id="joinSelCount">0テーブル選択中</span>
+    <button class="btn btn-primary" onclick="confirmJoin()" style="font-size:11px;padding:4px 10px;">連結確定</button>
+    <button class="btn btn-secondary" onclick="cancelJoin()" style="font-size:11px;padding:4px 10px;background:rgba(255,255,255,0.2);color:#fff;">キャンセル</button>
+  </div>
   <div class="floor-plan" id="floorPlan"></div>
 </div>
 
@@ -211,11 +225,16 @@ body{font-family:'Helvetica Neue',Arial,sans-serif;background:#1a1a2e;color:#eee
 <script>
 // ─── STATE ───────────────────────────────────────────────────────────
 const S = {
-  sessions: {},      // tableId -> session
+  sessions: {},      // tableId -> session (joined tables share same session object)
   casts: [],
   castHistory: {},   // castId -> [{tableId,tableName,startTime,endTime,checkedOut,shimei}]
   drag: { cast: null, active: false, startX: 0, startY: 0 },
   checkinTableId: null,
+  checkinGroupId: null,
+  joinMode: false,
+  joinSelection: [], // tableIds selected in join mode
+  joinGroups: {},    // groupId -> [tableId, ...]
+  tableJoinMap: {},  // tableId -> groupId
 };
 
 // ─── TABLE DEFINITIONS ───────────────────────────────────────────────
@@ -306,24 +325,29 @@ function pad(n){return String(n).padStart(2,'0');}
 // ─── TIMER TICK ───────────────────────────────────────────────────────
 function tickTimers() {
   const now = Date.now();
+  const seen = new Set();
   Object.keys(S.sessions).forEach(tid => {
     const sess = S.sessions[tid];
+    if (seen.has(sess)) return;
+    seen.add(sess);
     const elapsed = Math.floor((now - sess.startTime) / 1000);
     const total = sess.totalMinutes * 60;
     let rem = total - (elapsed % total);
     if (sess.autoExtend && elapsed > 0 && elapsed % total === 0) rem = total;
     sess.remainingSeconds = rem;
     sess.currentCycle = Math.floor(elapsed / total);
-
-    const el = document.querySelector(`[data-tid="${tid}"]`);
-    if (!el) return;
-    const timerEl = el.querySelector('.table-timer');
-    if (timerEl) {
-      timerEl.textContent = pad(Math.floor(rem/60))+':'+pad(rem%60);
-      timerEl.className = 'table-timer' + (rem <= 600 ? ' warning' : '');
-    }
-    if (rem <= 600) { el.classList.add('blinking'); }
-    else            { el.classList.remove('blinking'); }
+    // Update all tables in this session (including joined)
+    getJoinedTableIds(sess).forEach(t => {
+      const el = document.querySelector(`[data-tid="${t}"]`);
+      if (!el) return;
+      const timerEl = el.querySelector('.table-timer');
+      if (timerEl) {
+        timerEl.textContent = pad(Math.floor(rem/60))+':'+pad(rem%60);
+        timerEl.className = 'table-timer' + (rem <= 600 ? ' warning' : '');
+      }
+      if (rem <= 600) { el.classList.add('blinking'); }
+      else            { el.classList.remove('blinking'); }
+    });
   });
   updateStats();
 }
@@ -349,6 +373,27 @@ function makeTableEl(def) {
 
   if (def.type === 'section') { el.style.cursor = 'default'; return el; }
 
+  // Show join group badge for pre-session linked tables
+  const groupId = S.tableJoinMap[def.id];
+  if (groupId && !S.sessions[def.id]) {
+    el.classList.add('join-grouped');
+    const badge = document.createElement('div');
+    badge.className = 'join-badge';
+    badge.textContent = '連結';
+    el.appendChild(badge);
+  }
+
+  // Join mode: override all click behavior
+  if (S.joinMode) {
+    if (S.sessions[def.id]) {
+      el.classList.add('join-inactive');
+    } else {
+      if (S.joinSelection.includes(def.id)) el.classList.add('join-selected');
+      el.addEventListener('click', () => selectForJoin(def.id));
+    }
+    return el;
+  }
+
   const sess = S.sessions[def.id];
   if (sess) {
     el.classList.add('active');
@@ -360,37 +405,49 @@ function makeTableEl(def) {
     timerEl.textContent = pad(Math.floor(rem/60))+':'+pad(rem%60);
     el.appendChild(timerEl);
 
-    const ca = document.createElement('div');
-    ca.className = 'customers-area';
-    const maxCircles = Math.min(sess.customerCount, 6);
-    for (let i = 0; i < maxCircles; i++) {
-      const circle = document.createElement('div');
-      circle.className = 'cust-circle';
-      circle.dataset.tid = def.id;
-      circle.dataset.idx = i;
-      const castId = sess.casts[i];
-      if (castId) {
-        circle.classList.add('has-cast');
-        if (sess.shimei && sess.shimei[i]) circle.classList.add('shimei');
-        const cast = getCast(castId);
-        const cn = document.createElement('div');
-        cn.className = 'circle-name' + (sess.shimei?.[i] ? ' shimei-name' : '');
-        cn.textContent = cast ? cast.name.slice(0,3) : '?';
-        circle.appendChild(cn);
-        circle.addEventListener('click', ev => { ev.stopPropagation(); showCastDetail(castId, def.id); });
-      } else {
-        circle.addEventListener('click', ev => ev.stopPropagation());
+    const isPrimary = sess.joinedTables ? sess.joinedTables[0] === def.id : true;
+    if (isPrimary) {
+      // Show customer circles on primary table
+      const ca = document.createElement('div');
+      ca.className = 'customers-area';
+      const maxCircles = Math.min(sess.customerCount, 6);
+      for (let i = 0; i < maxCircles; i++) {
+        const circle = document.createElement('div');
+        circle.className = 'cust-circle';
+        circle.dataset.tid = def.id;
+        circle.dataset.idx = i;
+        const castId = sess.casts[i];
+        if (castId) {
+          circle.classList.add('has-cast');
+          if (sess.shimei && sess.shimei[i]) circle.classList.add('shimei');
+          const cast = getCast(castId);
+          const cn = document.createElement('div');
+          cn.className = 'circle-name' + (sess.shimei?.[i] ? ' shimei-name' : '');
+          cn.textContent = cast ? cast.name.slice(0,3) : '?';
+          circle.appendChild(cn);
+          circle.addEventListener('click', ev => { ev.stopPropagation(); showCastDetail(castId, def.id); });
+        } else {
+          circle.addEventListener('click', ev => ev.stopPropagation());
+        }
+        ca.appendChild(circle);
       }
-      ca.appendChild(circle);
+      if (sess.customerCount > 6) {
+        const more = document.createElement('div');
+        more.style.cssText = 'font-size:8px;color:#666;';
+        more.textContent = `+${sess.customerCount-6}`;
+        ca.appendChild(more);
+      }
+      el.appendChild(ca);
+    } else {
+      // Secondary joined table: show link reference
+      const linkEl = document.createElement('div');
+      linkEl.style.cssText = 'font-size:8px;color:#9c27b0;font-weight:bold;margin-top:2px;';
+      linkEl.textContent = `🔗${TABLE_MAP[sess.joinedTables[0]].name}と連結`;
+      el.appendChild(linkEl);
     }
-    if (sess.customerCount > 6) {
-      const more = document.createElement('div');
-      more.style.cssText = 'font-size:8px;color:#666;';
-      more.textContent = `+${sess.customerCount-6}`;
-      ca.appendChild(more);
-    }
-    el.appendChild(ca);
-    el.addEventListener('click', () => showTableDetail(def.id));
+
+    const primaryId = sess.joinedTables ? sess.joinedTables[0] : def.id;
+    el.addEventListener('click', () => showTableDetail(primaryId));
   } else {
     el.addEventListener('click', () => openCheckin(def.id));
   }
@@ -421,10 +478,13 @@ function makeCastCard(cast) {
   card.dataset.castId = cast.id;
   card.setAttribute('draggable', false);
 
-  // Find where this cast is assigned
+  // Find where this cast is assigned (check unique sessions only)
   let atTable = null;
-  Object.keys(S.sessions).forEach(tid => {
-    if (S.sessions[tid].casts.includes(cast.id)) atTable = TABLE_MAP[tid];
+  const seenCards = new Set();
+  Object.values(S.sessions).forEach(s => {
+    if (seenCards.has(s)) return;
+    seenCards.add(s);
+    if (s.casts.includes(cast.id)) atTable = TABLE_MAP[s.tableId];
   });
   if (atTable) {
     const badge = document.createElement('div');
@@ -452,7 +512,7 @@ function statusLabel(s) {
 function updateStats() {
   const avail = S.casts.filter(c=>c.status==='available').length;
   const busy  = S.casts.filter(c=>c.status==='busy').length;
-  const tables = Object.keys(S.sessions).length;
+  const tables = new Set(Object.values(S.sessions)).size;
   document.getElementById('castAreaStats').textContent =
     `待機 ${avail}名 / 接客中 ${busy}名`;
   document.getElementById('headerStats').innerHTML =
@@ -575,15 +635,16 @@ function assignCast(castId, tableId, idx) {
   const cast = getCast(castId);
   if (!cast) return;
 
-  // Remove from any previous table
-  Object.keys(S.sessions).forEach(tid => {
-    const s = S.sessions[tid];
+  // Remove from any previous session (deduplicate joined tables)
+  const processedSess = new Set();
+  Object.values(S.sessions).forEach(s => {
+    if (processedSess.has(s)) return;
+    processedSess.add(s);
     const i = s.casts.indexOf(castId);
     if (i !== -1) {
-      // Add partial history entry
-      pushHistory(castId, tid, false);
+      pushHistory(castId, s.tableId, false);
       s.casts[i] = null;
-      refreshTable(tid);
+      getJoinedTableIds(s).forEach(t => refreshTable(t));
     }
   });
 
@@ -592,9 +653,10 @@ function assignCast(castId, tableId, idx) {
   sess.castStartTimes[castId] = Date.now();
   cast.status = 'busy';
 
-  refreshTable(tableId);
+  getJoinedTableIds(sess).forEach(t => refreshTable(t));
   renderCasts();
-  toast(`${cast.name} を ${TABLE_MAP[tableId].name} に配置しました`);
+  const tableNames = getJoinedTableIds(sess).map(t => TABLE_MAP[t].name).join('・');
+  toast(`${cast.name} を ${tableNames} に配置しました`);
 }
 
 function removeCastFromTable(castId, tableId) {
@@ -602,11 +664,11 @@ function removeCastFromTable(castId, tableId) {
   if (!sess) return;
   const i = sess.casts.indexOf(castId);
   if (i === -1) return;
-  pushHistory(castId, tableId, false);
+  pushHistory(castId, sess.tableId, false);
   sess.casts[i] = null;
   const cast = getCast(castId);
   if (cast && !isAssigned(castId)) cast.status = 'available';
-  refreshTable(tableId);
+  getJoinedTableIds(sess).forEach(t => refreshTable(t));
   renderCasts();
   closeModal('tableModal');
 }
@@ -617,8 +679,12 @@ function isAssigned(castId) {
 
 // ─── CHECK-IN ─────────────────────────────────────────────────────────
 function openCheckin(tableId) {
-  S.checkinTableId = tableId;
-  document.getElementById('checkinTitle').textContent = `🚪 ${TABLE_MAP[tableId].name} 入店登録`;
+  const gid = S.tableJoinMap[tableId];
+  const groupTables = gid ? S.joinGroups[gid] : [tableId];
+  S.checkinTableId = groupTables[0];
+  S.checkinGroupId = gid || null;
+  const tableNames = groupTables.map(t => TABLE_MAP[t].name).join('・');
+  document.getElementById('checkinTitle').textContent = `🚪 ${tableNames} 入店登録`;
   setNowTime();
   document.getElementById('customerCount').value = 2;
   document.querySelector('input[name="timerMode"][value="auto"]').checked = true;
@@ -637,6 +703,8 @@ function changeCount(d) {
 
 function confirmCheckin() {
   const tid  = S.checkinTableId;
+  const gid  = S.checkinGroupId;
+  const groupTables = gid ? S.joinGroups[gid] : [tid];
   const tval = document.getElementById('checkinTime').value;
   const cnt  = parseInt(document.getElementById('customerCount').value);
   const mode = document.querySelector('input[name="timerMode"]:checked').value;
@@ -644,8 +712,9 @@ function confirmCheckin() {
   const st = new Date(); st.setHours(h,m,0,0);
   const mins = mode === 'auto' ? 60 : parseInt(mode);
 
-  S.sessions[tid] = {
+  const sess = {
     tableId: tid,
+    joinedTables: groupTables,
     startTime: st.getTime(),
     customerCount: cnt,
     totalMinutes: mins,
@@ -656,11 +725,14 @@ function confirmCheckin() {
     remainingSeconds: mins * 60,
     currentCycle: 0,
   };
+  // Store same session object under all joined table IDs
+  groupTables.forEach(t => { S.sessions[t] = sess; });
 
   closeModal('checkinModal');
-  refreshTable(tid);
+  groupTables.forEach(t => refreshTable(t));
   renderCasts();
-  toast(`${TABLE_MAP[tid].name} に ${cnt}名様が入店しました`);
+  const tableNames = groupTables.map(t => TABLE_MAP[t].name).join('・');
+  toast(`${tableNames} に ${cnt}名様が入店しました`);
 }
 
 // ─── TABLE DETAIL ─────────────────────────────────────────────────────
@@ -706,10 +778,16 @@ function showTableDetail(tid) {
     shimeiToggleHTML += '</div></div>';
   }
 
+  const joinedTables = sess.joinedTables || [tid];
+  const joinedLabel = joinedTables.length > 1
+    ? `<div class="modal-row"><span class="modal-label">連結テーブル</span><span class="modal-value" style="color:#9c27b0;">🔗 ${joinedTables.map(t=>TABLE_MAP[t].name).join('・')}</span></div>`
+    : '';
+
   document.getElementById('tableModalContent').innerHTML = `
-    <h2>🪑 テーブル ${tbl.name}</h2>
+    <h2>🪑 テーブル ${joinedTables.map(t=>TABLE_MAP[t].name).join('・')}</h2>
     <div class="timer-big ${isWarn?'warning':'ok'}">${pad(Math.floor(rem/60))}:${pad(rem%60)}</div>
     <div style="text-align:center;font-size:11px;color:#888;margin-bottom:8px;">${sess.totalMinutes}分 / ${sess.autoExtend?'自動延長':'タイム'}</div>
+    ${joinedLabel}
     <div class="modal-row">
       <span class="modal-label">入店時間</span>
       <span class="modal-value">${entryStr}</span>
@@ -734,7 +812,7 @@ function showTableDetail(tid) {
         <button class="btn btn-warning" onclick="extendTimer('${tid}',60)">＋60分</button>
       </div>
     </div>
-    <div class="btn-group" style="margin-top:16px;padding-top:12px;border-top:1px solid #2a3a5c;">
+    <div class="btn-group" style="margin-top:16px;padding-top:12px;border-top:1px solid #d0d8e8;">
       <button class="btn btn-danger" onclick="checkout('${tid}')">💳 会計</button>
       <button class="btn btn-secondary" onclick="closeModal('tableModal')">閉じる</button>
     </div>
@@ -747,8 +825,8 @@ function toggleShimei(tid, idx) {
   if (!sess) return;
   if (!sess.shimei) sess.shimei = new Array(sess.customerCount).fill(false);
   sess.shimei[idx] = !sess.shimei[idx];
-  refreshTable(tid);
-  showTableDetail(tid);
+  getJoinedTableIds(sess).forEach(t => refreshTable(t));
+  showTableDetail(sess.joinedTables ? sess.joinedTables[0] : tid);
 }
 
 function extendTimer(tid, mins) {
@@ -756,29 +834,38 @@ function extendTimer(tid, mins) {
   if (!sess) return;
   sess.totalMinutes += mins;
   sess.remainingSeconds = (sess.remainingSeconds ?? 0) + mins * 60;
-  refreshTable(tid);
+  getJoinedTableIds(sess).forEach(t => refreshTable(t));
   closeModal('tableModal');
-  toast(`${TABLE_MAP[tid].name} を ${mins}分延長しました`);
+  const tableNames = getJoinedTableIds(sess).map(t => TABLE_MAP[t].name).join('・');
+  toast(`${tableNames} を ${mins}分延長しました`);
 }
 
 function checkout(tid) {
   const sess = S.sessions[tid];
   if (!sess) return;
+  const joinedTables = getJoinedTableIds(sess);
   sess.casts.forEach(castId => {
     if (!castId) return;
-    pushHistory(castId, tid, true);
+    pushHistory(castId, sess.tableId, true);
     const cast = getCast(castId);
     if (cast && !isAssignedElsewhere(castId, tid)) cast.status = 'available';
   });
-  delete S.sessions[tid];
+  joinedTables.forEach(t => delete S.sessions[t]);
   closeModal('tableModal');
-  refreshTable(tid);
+  joinedTables.forEach(t => refreshTable(t));
   renderCasts();
-  toast(`${TABLE_MAP[tid].name} の会計が完了しました`);
+  const tableNames = joinedTables.map(t => TABLE_MAP[t].name).join('・');
+  toast(`${tableNames} の会計が完了しました`);
 }
 
 function isAssignedElsewhere(castId, exceptTid) {
-  return Object.keys(S.sessions).some(tid => tid !== exceptTid && S.sessions[tid].casts.includes(castId));
+  const exceptSess = S.sessions[exceptTid];
+  const seen = new Set();
+  return Object.values(S.sessions).some(s => {
+    if (s === exceptSess || seen.has(s)) return false;
+    seen.add(s);
+    return s.casts.includes(castId);
+  });
 }
 
 // ─── CAST DETAIL ──────────────────────────────────────────────────────
@@ -789,10 +876,12 @@ function showCastDetail(castId, fromTable) {
 
   let currentTid = null;
   let currentServiceMins = 0;
-  Object.keys(S.sessions).forEach(tid => {
-    const s = S.sessions[tid];
+  const seenDetail = new Set();
+  Object.values(S.sessions).forEach(s => {
+    if (seenDetail.has(s)) return;
+    seenDetail.add(s);
     if (s.casts.includes(castId)) {
-      currentTid = tid;
+      currentTid = s.tableId;
       const st = s.castStartTimes?.[castId] || s.startTime;
       currentServiceMins = Math.floor((Date.now() - st) / 60000);
     }
@@ -875,6 +964,100 @@ function toast(msg) {
   el.textContent = msg;
   document.body.appendChild(el);
   setTimeout(() => el.remove(), 2500);
+}
+
+// ─── JOIN HELPERS ─────────────────────────────────────────────────────
+function getJoinedTableIds(sess) {
+  return sess.joinedTables || [sess.tableId];
+}
+
+// ─── JOIN MODE ────────────────────────────────────────────────────────
+function toggleJoinMode() {
+  S.joinMode = !S.joinMode;
+  S.joinSelection = [];
+  const btn = document.getElementById('joinModeBtn');
+  btn.textContent = S.joinMode ? '✕ 終了' : '🔗 連結';
+  btn.style.background = S.joinMode ? '#e94560' : '';
+  btn.style.color = S.joinMode ? '#fff' : '';
+  document.getElementById('joinModeBar').classList.toggle('active', S.joinMode);
+  document.getElementById('joinSelCount').textContent = '0テーブル選択中';
+  renderFloor();
+}
+
+function selectForJoin(tableId) {
+  const idx = S.joinSelection.indexOf(tableId);
+  if (idx >= 0) {
+    S.joinSelection.splice(idx, 1);
+  } else {
+    S.joinSelection.push(tableId);
+  }
+  document.getElementById('joinSelCount').textContent = `${S.joinSelection.length}テーブル選択中`;
+  renderFloor();
+}
+
+function confirmJoin() {
+  if (S.joinSelection.length === 1) {
+    // Single selection: unlink if it's in a group
+    const tid = S.joinSelection[0];
+    const gid = S.tableJoinMap[tid];
+    if (gid) {
+      unlinkGroup(gid);
+      return;
+    }
+    toast('2つ以上のテーブルを選択してください');
+    return;
+  }
+  if (S.joinSelection.length < 2) {
+    toast('2つ以上のテーブルを選択してください');
+    return;
+  }
+  // Remove selected tables from any existing groups
+  S.joinSelection.forEach(tid => {
+    const oldGid = S.tableJoinMap[tid];
+    if (oldGid) {
+      S.joinGroups[oldGid] = S.joinGroups[oldGid].filter(t => t !== tid);
+      if (S.joinGroups[oldGid].length <= 1) {
+        (S.joinGroups[oldGid] || []).forEach(t => delete S.tableJoinMap[t]);
+        delete S.joinGroups[oldGid];
+      }
+    }
+    delete S.tableJoinMap[tid];
+  });
+  const gid = 'grp_' + Date.now();
+  S.joinGroups[gid] = [...S.joinSelection];
+  S.joinSelection.forEach(tid => { S.tableJoinMap[tid] = gid; });
+  const tableNames = S.joinGroups[gid].map(t => TABLE_MAP[t].name).join('・');
+  S.joinSelection = [];
+  S.joinMode = false;
+  resetJoinBtn();
+  renderFloor();
+  toast(`${tableNames} を連結しました`);
+}
+
+function cancelJoin() {
+  S.joinSelection = [];
+  S.joinMode = false;
+  resetJoinBtn();
+  renderFloor();
+}
+
+function unlinkGroup(gid) {
+  const group = [...(S.joinGroups[gid] || [])];
+  group.forEach(t => delete S.tableJoinMap[t]);
+  delete S.joinGroups[gid];
+  S.joinSelection = [];
+  S.joinMode = false;
+  resetJoinBtn();
+  renderFloor();
+  toast('テーブルの連結を解除しました');
+}
+
+function resetJoinBtn() {
+  const btn = document.getElementById('joinModeBtn');
+  btn.textContent = '🔗 連結';
+  btn.style.background = '';
+  btn.style.color = '';
+  document.getElementById('joinModeBar').classList.remove('active');
 }
 
 // ─── START ────────────────────────────────────────────────────────────
